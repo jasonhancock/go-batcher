@@ -123,6 +123,7 @@ func (b *Batcher[T]) run(ctx context.Context) {
 			shouldProcess := b.batch.Add(msg)
 			if shouldProcess {
 				b.processBatch()
+				ticker.Reset(b.maxWait)
 			}
 		}
 	}
