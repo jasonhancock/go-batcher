@@ -74,7 +74,8 @@ func NewBatcher[T any](ctx context.Context, wg *sync.WaitGroup, maxWait time.Dur
 	return &b
 }
 
-var errNewItems = errors.New("unable to accept new items")
+// ErrNewItems is the error returned once the batcher has been shut down.
+var ErrNewItems = errors.New("unable to accept new items")
 
 // AddItem inserts an item into the batch. Can block if the internal channel gets
 // full. Will return an error if the item cannot be added because the batcher has
@@ -84,7 +85,7 @@ func (b *Batcher[T]) AddItem(value T) error {
 	done := b.done
 	b.lock.RUnlock()
 	if done {
-		return errNewItems
+		return ErrNewItems
 	}
 	b.waitGroup.Add(1)
 	b.queue <- value

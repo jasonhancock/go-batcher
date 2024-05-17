@@ -108,7 +108,7 @@ func TestBatcher(t *testing.T) {
 
 		err := batcher.AddItem(1)
 		require.Error(t, err)
-		require.Equal(t, errNewItems, err)
+		require.Equal(t, ErrNewItems, err)
 	})
 
 	t.Run("basic operation - verify metrics", func(t *testing.T) {
