@@ -26,8 +26,16 @@ type Batcher[T any] struct {
 	batch   Batch[T]
 	queue   chan T
 
+	// lock guards done and the close of queue. AddItem holds it for reading across its
+	// send and run takes it for writing before closing queue, so queue can never be
+	// closed under a send.
 	lock sync.RWMutex
 	done bool
+
+	// stop is closed when shutdown begins, before run takes lock for writing. An AddItem
+	// blocked on a full queue holds lock for reading, and only run drains queue, so
+	// without this a full queue would deadlock shutdown.
+	stop chan struct{}
 
 	// This wait group ensures that after the context is closed, that all items that
 	// have been added are processed.
@@ -55,6 +63,7 @@ func NewBatcher[T any](ctx context.Context, wg *sync.WaitGroup, maxWait time.Dur
 		maxWait:                 maxWait,
 		done:                    false,
 		queue:                   make(chan T, opt.queueDepth),
+		stop:                    make(chan struct{}),
 		waitGroup:               wg,
 		handlerFn:               handler,
 		counterBatchesProcessed: opt.metricBatchesProcessed,
@@ -79,17 +88,24 @@ var ErrNewItems = errors.New("unable to accept new items")
 
 // AddItem inserts an item into the batch. Can block if the internal channel gets
 // full. Will return an error if the item cannot be added because the batcher has
-// been instructed to shut down.
+// been instructed to shut down, including when it is blocked on a full channel at the
+// time. An item it accepts is always processed. Safe to call concurrently with the
+// batcher shutting down.
 func (b *Batcher[T]) AddItem(value T) error {
 	b.lock.RLock()
-	done := b.done
-	b.lock.RUnlock()
-	if done {
+	defer b.lock.RUnlock()
+	if b.done {
 		return ErrNewItems
 	}
+
 	b.waitGroup.Add(1)
-	b.queue <- value
-	return nil
+	select {
+	case b.queue <- value:
+		return nil
+	case <-b.stop:
+		b.waitGroup.Done()
+		return ErrNewItems
+	}
 }
 
 func (b *Batcher[T]) run(ctx context.Context) {
@@ -99,6 +115,12 @@ func (b *Batcher[T]) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Wake any AddItem blocked on a full queue, so taking the lock below can't
+			// wait on it forever.
+			close(b.stop)
+
+			// Waits for every in-flight AddItem to either send or give up. After this
+			// nothing can send, so closing queue is safe.
 			b.lock.Lock()
 			b.done = true // stop accepting additional work
 			close(b.queue)
